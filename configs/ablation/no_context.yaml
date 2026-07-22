@@ -1,0 +1,3 @@
+# 消融实验：去掉社交上下文特征（6 维：x, y, vx, vy, t/T, 1）
+model:
+  input_dim: 6

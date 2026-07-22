@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 数据和输出
+data/raw/
+data/processed/
+1/
+outputs/
+*.npz
+*.pth
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 虚拟环境
+venv/
+env/
