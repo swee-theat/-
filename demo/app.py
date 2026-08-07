@@ -31,10 +31,10 @@ from models.trajectory_model import TrajectoryModel
 # ── 配置 ──────────────────────────────────────────────
 OBS_LEN = 20          # 观测帧数 (2秒)
 PRED_LEN = 30         # 预测帧数 (3秒)
-INPUT_DIM = 9         # 特征维度
+INPUT_DIM = 11        # 特征维度 (11=完整+航向+曲率)
 HIDDEN_DIM = 128
-NUM_MODES = 3
-CHECKPOINT_PATH = "outputs/checkpoints/real_baseline/best_model.pt"
+NUM_MODES = 5         # K=5 多模态
+CHECKPOINT_PATH = "outputs/checkpoints/full_train_K5/best_model.pt"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -48,6 +48,7 @@ model = TrajectoryModel(
     pred_len=PRED_LEN,
     pooling_type="attention",
     use_uncertainty=True,
+    use_temporal_conv=True,
 )
 
 try:
@@ -79,22 +80,22 @@ print(f"运行设备: {DEVICE}")
 print(f"K = {NUM_MODES} 模态")
 
 
-# ── 特征工程（9维，与 preprocessing.py 严格一致）───────
+# ── 特征工程（11维，与 preprocessing.py 严格一致）───────
 def compute_features(obs_centered: np.ndarray) -> np.ndarray:
-    """计算 9 维特征。
+    """计算 11 维特征。
 
     与 data/preprocessing.py 的 extract_agent_track() 保持一致：
     - 坐标以最后观测帧为原点居中
     - 速度用前向差分（dt=0.1），t=0 复制 t=1 的速度
     - 时间步归一化: i / (obs_len - 1)
 
-    9 维: [x, y, vx, vy, t/T, 1, dist_nearest/100, rel_x/100, rel_y/100]
+    11 维: [x, y, vx, vy, t/T, 1, dist/100, rel_x/100, rel_y/100, heading, curvature]
 
     参数:
         obs_centered: [T, 2] 以最后观测帧为原点的坐标
 
     返回:
-        features: [T, 9]
+        features: [T, 11]
     """
     T = min(len(obs_centered), OBS_LEN)
     features = np.zeros((T, INPUT_DIM), dtype=np.float32)
@@ -108,6 +109,14 @@ def compute_features(obs_centered: np.ndarray) -> np.ndarray:
         vx[0] = vx[1]  # 第一帧复制第二帧速度
         vy[0] = vy[1]
 
+    # 航向角和曲率（与 preprocessing 一致，展开 + 裁剪）
+    heading = np.unwrap(np.arctan2(vy, vx))
+    curvature = np.zeros(T, dtype=np.float32)
+    if T > 1:
+        curvature[1:] = (heading[1:] - heading[:-1]) / 0.1
+        curvature[0] = curvature[1]
+    curvature = np.clip(curvature, -3.0, 3.0)
+
     for i in range(T):
         features[i] = [
             obs_centered[i, 0],           # 0: x（以最后观测帧为原点）
@@ -119,6 +128,8 @@ def compute_features(obs_centered: np.ndarray) -> np.ndarray:
             0.0,                            # 6: 最近邻距离/100
             0.0,                            # 7: 相对最近邻 x/100
             0.0,                            # 8: 相对最近邻 y/100
+            heading[i],                     # 9: 航向角（rad）
+            curvature[i],                   # 10: 曲率（rad/s）
         ]
 
     return features
@@ -332,42 +343,45 @@ def predict_csv():
 
 
 # ── API: 内置示例 ─────────────────────────────────────
+# 注意: 示例速度需匹配训练数据分布（中位数 ~2 m/s, 均值 ~5 m/s）
+# x 每帧增量 0.2 = 2 m/s, 与训练数据低速场景一致
 @app.route("/api/v1/examples", methods=["GET"])
 def examples():
-    t = np.linspace(0, 2 * np.pi, OBS_LEN)
     examples = [
         {
             "name": "straight",
-            "description": "匀速直线运动",
-            "trajectory": [[float(i), float(i * 0.5)] for i in range(OBS_LEN)],
+            "description": "匀速直线运动 (~2 m/s)",
+            "trajectory": [[float(i * 0.2), float(i * 0.1)] for i in range(OBS_LEN)],
         },
         {
             "name": "curve",
-            "description": "大曲率弯道",
-            "trajectory": [[float(i), float(np.sin(i * 0.3) * 5)] for i in range(OBS_LEN)],
+            "description": "S弯道 (~2 m/s, 低频S形曲线)",
+            # 真实S弯：2秒内约半个周期，曲率方向变化一次（先右后左）
+            # 频率 0.1 = 20帧覆盖 ~2 rad，接近真实山路连续弯道节奏
+            "trajectory": [[float(i * 0.2), float(np.sin(i * 0.1) * 2.0)] for i in range(OBS_LEN)],
         },
         {
             "name": "lane_change",
-            "description": "S 形换道",
+            "description": "S 形换道 (~2 m/s)",
             "trajectory": [
-                [float(i), 0.0 if i < 10 else float((i - 10) * 0.4)]
+                [float(i * 0.2), 0.0 if i < 10 else float((i - 10) * 0.08)]
                 for i in range(OBS_LEN)
             ],
         },
         {
             "name": "slow_down",
-            "description": "减速右转",
+            "description": "减速右转 (~1-2 m/s)",
             "trajectory": [
-                [float(i * (1.0 - i * 0.02)), float(i * 0.15 + i * i * 0.008)]
+                [float(i * 0.2 * (1.0 - i * 0.02)), float(i * 0.03 + i * i * 0.0016)]
                 for i in range(OBS_LEN)
             ],
         },
         {
             "name": "u_turn",
-            "description": "掉头场景",
+            "description": "掉头场景 (~1.9 m/s, 半径1.2m半圆弧)",
             "trajectory": [
-                [float(i * 0.6 + np.sin(i * 0.2) * 3),
-                 float(3 - np.cos(i * 0.2) * 3)]
+                [float(np.sin(i * np.pi / 20) * 1.2),
+                 float(1.2 - np.cos(i * np.pi / 20) * 1.2)]
                 for i in range(OBS_LEN)
             ],
         },

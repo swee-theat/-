@@ -11,8 +11,8 @@ class ArgoverseTrajectoryDataset(Dataset):
     """Argoverse 轨迹预测数据集。
 
     每个样本:
-        history:  [T_obs, 9]  历史轨迹特征
-        future:   [T_pred, 2] 未来轨迹真值 (x, y)
+        history:  [T_obs, 11] 历史轨迹特征 (动态维度，取决于 preprocessing 输出)
+        future:   [T_pred, 2]  未来轨迹真值 (x, y)
         category: int          场景类型 (0-4)
         seq_id:   str          序列标识（用于调试）
     """
@@ -33,7 +33,7 @@ class ArgoverseTrajectoryDataset(Dataset):
         """
         data = np.load(npz_path, allow_pickle=True)
 
-        self.histories = data["histories"]      # [N, T_obs, 9]
+        self.histories = data["histories"]      # [N, T_obs, input_dim]
         self.futures = data["futures"]            # [N, T_pred, 2]
         self.categories = data["categories"]      # [N]
         self.seq_ids = data["seq_ids"]            # [N]
@@ -53,7 +53,7 @@ class ArgoverseTrajectoryDataset(Dataset):
         seq_id = str(self.seq_ids[idx])
 
         return {
-            "history": history,     # [T_obs, 9]
+            "history": history,     # [T_obs, input_dim]
             "future": future,        # [T_pred, 2]
             "category": category,    # int
             "seq_id": seq_id,        # str

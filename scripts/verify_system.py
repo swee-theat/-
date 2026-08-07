@@ -28,10 +28,19 @@ def test_model_build():
     print("  测试 1: 模型构建")
     print("=" * 60)
 
+    cfg = config_to_dict(load_config("configs/default.yaml"))
+    input_dim = cfg["model"].get("input_dim", 11)
+
     model = TrajectoryModel(
-        input_dim=9, hidden_dim=128, num_mlp_layers=3,
-        dropout=0.1, num_modes=3, pred_len=30,
-        pooling_type="attention", use_uncertainty=True,
+        input_dim=input_dim,
+        hidden_dim=cfg["model"].get("hidden_dim", 128),
+        num_mlp_layers=cfg["model"].get("num_mlp_layers", 3),
+        dropout=cfg["model"].get("dropout", 0.1),
+        num_modes=cfg["model"].get("num_modes", 3),
+        pred_len=cfg["data"].get("pred_len", 30),
+        pooling_type=cfg["model"].get("pooling", "attention"),
+        use_uncertainty=cfg["model"].get("use_uncertainty", True),
+        use_temporal_conv=cfg["model"].get("use_temporal_conv", True),
     )
 
     total_params, _ = count_parameters(model)
@@ -49,7 +58,8 @@ def test_forward_pass(model):
     print("=" * 60)
 
     B, T_obs, T_pred = 16, 20, 30
-    history = torch.randn(B, T_obs, 9)
+    input_dim = model.input_dim
+    history = torch.randn(B, T_obs, input_dim)
 
     model.eval()
     with torch.no_grad():
@@ -188,17 +198,21 @@ def test_overfit_single_batch():
     print("  测试 6: 单 batch 过拟合")
     print("=" * 60)
 
+    cfg = config_to_dict(load_config("configs/default.yaml"))
     model = TrajectoryModel(
-        input_dim=9, hidden_dim=64, num_mlp_layers=2,
+        input_dim=cfg["model"].get("input_dim", 11),
+        hidden_dim=64, num_mlp_layers=2,
         dropout=0.0, num_modes=2, pred_len=30,
         pooling_type="attention", use_uncertainty=False,
+        use_temporal_conv=False,
     )
 
     criterion = CombinedLoss(lambda_traj=0.7, lambda_mode=0.3)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
 
     B, T_obs, T_pred = 16, 20, 30
-    history = torch.randn(B, T_obs, 9)
+    input_dim = model.input_dim
+    history = torch.randn(B, T_obs, input_dim)
     future = torch.randn(B, T_pred, 2)
 
     model.train()

@@ -29,6 +29,7 @@ class TrajectoryEncoder(nn.Module):
         num_mlp_layers: int = 3,
         dropout: float = 0.1,
         pooling_type: str = "attention",
+        use_temporal_conv: bool = True,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -47,6 +48,14 @@ class TrajectoryEncoder(nn.Module):
             MLPBlock(hidden_dim, hidden_dim, dropout)
             for _ in range(num_mlp_layers)
         ])
+
+        # 时序混合层（depthwise conv1d，约 384 参数，捕获局部时序模式）
+        self.use_temporal_conv = use_temporal_conv
+        if use_temporal_conv:
+            self.temporal_mixer = nn.Conv1d(
+                hidden_dim, hidden_dim, kernel_size=3,
+                padding=1, groups=hidden_dim,  # depthwise
+            )
 
         # 时间维度池化
         self.pooling = build_pooling(pooling_type, hidden_dim)
@@ -74,6 +83,13 @@ class TrajectoryEncoder(nn.Module):
             # 残差连接（如果维度匹配）
             if x.shape == residual.shape:
                 x = x + residual
+
+        # 时序混合（depthwise conv1d 在时间维度上做局部交互）
+        if self.use_temporal_conv:
+            # [B, T, H] → [B, H, T] → conv1d → [B, H, T] → [B, T, H]
+            x_t = x.transpose(1, 2)  # [B, H, T]
+            x_t = self.temporal_mixer(x_t)
+            x = x_t.transpose(1, 2)  # [B, T, H]
 
         # 时间维度池化 [B, T, hidden_dim] → [B, hidden_dim]
         pooled, attn_weights = self.pooling(x, return_weights=return_attn_weights)

@@ -70,6 +70,7 @@ def main():
         pred_len=data_cfg.get("pred_len", 30),
         pooling_type=model_cfg.get("pooling", "attention"),
         use_uncertainty=model_cfg.get("use_uncertainty", True),
+        use_temporal_conv=model_cfg.get("use_temporal_conv", True),
     )
 
     # 打印参数量

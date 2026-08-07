@@ -15,6 +15,7 @@ from .losses import CombinedLoss
 from .optimizer import build_optimizer, build_scheduler
 from .early_stopping import EarlyStopping
 from utils.checkpoint import save_checkpoint, load_checkpoint
+from data.augmentation import TrajectoryAugmentation
 
 
 class Trainer:
@@ -53,6 +54,7 @@ class Trainer:
         self.criterion = CombinedLoss(
             lambda_traj=loss_cfg.get("lambda_traj", 0.7),
             lambda_mode=loss_cfg.get("lambda_mode", 0.3),
+            lambda_unc=loss_cfg.get("lambda_unc", 0.0),
             traj_loss_type=loss_cfg.get("traj_loss_type", "smooth_l1"),
         )
 
@@ -98,6 +100,15 @@ class Trainer:
         self.save_top_k = log_cfg.get("save_top_k", 3)
         self.log_every_n_steps = log_cfg.get("log_every_n_steps", 50)
 
+        # 数据增强
+        aug_cfg = config.get("data", {}).get("augmentation", {})
+        self.augmentation = TrajectoryAugmentation(
+            enable=aug_cfg.get("enable", True),
+            rotation_range=aug_cfg.get("rotation_range", 3.14159),
+            scale_range=tuple(aug_cfg.get("scale_range", [0.9, 1.1])),
+            noise_std=aug_cfg.get("noise_std", 0.02),
+        )
+
         # 追踪
         self.current_epoch = 0
         self.best_val_ade = float("inf")
@@ -120,8 +131,11 @@ class Trainer:
         pbar = tqdm(self.train_loader, desc=f"Epoch {self.current_epoch + 1}/{self.epochs} [Train]")
 
         for batch_idx, batch in enumerate(pbar):
-            history = batch["history"].to(self.device)   # [B, T_obs, 9]
+            history = batch["history"].to(self.device)   # [B, T_obs, input_dim]
             future = batch["future"].to(self.device)       # [B, T_pred, 2]
+
+            # 数据增强（仅训练时）
+            history, future = self.augmentation(history, future)
 
             # 前向传播（使用 AMP）
             if self.use_amp and self.scaler is not None:
@@ -305,17 +319,19 @@ class Trainer:
                 if self.logger:
                     self.logger.info(f"  → 保存最佳模型: minADE={self.best_val_ade:.4f}")
 
-            # 定期保存
+            # 定期保存（记录 epoch 和 minADE 用于 top-k 筛选）
             ckpt_path = self.checkpoint_dir / f"checkpoint_epoch_{epoch + 1}.pt"
             save_checkpoint(
                 self.model, self.optimizer, self.scheduler,
                 epoch, val_metrics, str(ckpt_path),
             )
-            self.saved_checkpoints.append(str(ckpt_path))
+            self.saved_checkpoints.append((val_metrics["val_min_ade"], str(ckpt_path)))
 
-            # 只保留最近 save_top_k 个 checkpoint
-            while len(self.saved_checkpoints) > self.save_top_k:
-                old_ckpt = self.saved_checkpoints.pop(0)
+            # 保留 minADE 最小的 save_top_k 个 checkpoint
+            if len(self.saved_checkpoints) > self.save_top_k:
+                # 按 minADE 降序排序，删除最差的
+                self.saved_checkpoints.sort(key=lambda x: x[0], reverse=True)
+                _, old_ckpt = self.saved_checkpoints.pop(0)
                 if os.path.exists(old_ckpt) and "best_model" not in old_ckpt:
                     os.remove(old_ckpt)
 

@@ -97,20 +97,25 @@ class ModeLoss(nn.Module):
 
 
 class CombinedLoss(nn.Module):
-    """联合损失: L = λ_traj * L_traj + λ_mode * L_mode。
+    """联合损失: L = λ_traj * L_traj + λ_mode * L_mode + λ_unc * L_unc。
 
-    默认权重: λ_traj=0.7, λ_mode=0.3
+    L_unc 使用高斯负对数似然 (NLL)，让不确定性估计参与训练：
+        L_unc = 0.5 * mean(log(σ²) + (y - ŷ)² / σ²)
+
+    默认权重: λ_traj=0.7, λ_mode=0.3, λ_unc=0.0 (关闭以兼容旧配置)
     """
 
     def __init__(
         self,
         lambda_traj: float = 0.7,
         lambda_mode: float = 0.3,
+        lambda_unc: float = 0.0,      # NLL 损失权重，设为 0.05~0.1 启用
         traj_loss_type: str = "smooth_l1",
     ):
         super().__init__()
         self.lambda_traj = lambda_traj
         self.lambda_mode = lambda_mode
+        self.lambda_unc = lambda_unc
         self.traj_loss_fn = TrajectoryLoss(loss_type=traj_loss_type)
         self.mode_loss_fn = ModeLoss()
 
@@ -122,16 +127,11 @@ class CombinedLoss(nn.Module):
         """计算联合损失。
 
         参数:
-            model_output: 模型输出字典，包含 trajectories, mode_logits
+            model_output: 模型输出字典，包含 trajectories, mode_logits, uncertainties(可选)
             ground_truth: [B, T_pred, 2] 真实未来轨迹
 
         返回:
-            {
-                "loss": 联合总损失,
-                "traj_loss": WTA 轨迹损失,
-                "mode_loss": 模态分类损失,
-                "best_mode_idx": 最佳模态索引 [B],
-            }
+            {"loss": 总损失, "traj_loss": ..., "mode_loss": ..., "unc_loss": ..., "best_mode_idx": ...}
         """
         trajectories = model_output["trajectories"]  # [B, K, T_pred, 2]
         mode_logits = model_output["mode_logits"]    # [B, K]
@@ -145,9 +145,27 @@ class CombinedLoss(nn.Module):
         # 联合损失
         total_loss = self.lambda_traj * traj_loss + self.lambda_mode * mode_loss
 
+        # 不确定性 NLL 损失（仅当启用且模型输出 uncertainties 时）
+        unc_loss = torch.tensor(0.0, device=traj_loss.device)
+        if self.lambda_unc > 0 and "uncertainties" in model_output:
+            uncertainties = model_output["uncertainties"]  # [B, K, T_pred, 2]
+            if uncertainties is not None:
+                # 仅计算最佳模态的 NLL
+                B = trajectories.shape[0]
+                best_traj = trajectories[torch.arange(B, device=traj_loss.device), best_mode_idx]
+                best_unc = uncertainties[torch.arange(B, device=traj_loss.device), best_mode_idx]
+                # L = 0.5 * (log(σ²) + (μ - y)² / σ²)，加 eps 防 log(0)
+                eps = 1e-6
+                log_var = torch.log(best_unc + eps)
+                sq_error = (best_traj - ground_truth) ** 2
+                nll = 0.5 * (log_var + sq_error / (best_unc + eps))
+                unc_loss = nll.mean()
+                total_loss = total_loss + self.lambda_unc * unc_loss
+
         return {
             "loss": total_loss,
             "traj_loss": traj_loss,
             "mode_loss": mode_loss,
+            "unc_loss": unc_loss,
             "best_mode_idx": best_mode_idx,
         }

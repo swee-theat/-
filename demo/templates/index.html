@@ -216,7 +216,7 @@
             <h3>交互式轨迹预测</h3>
             <canvas id="canvas" width="800" height="500"></canvas>
             <div class="hint">
-                在画布上点击添加轨迹点（至少20个）| 拖拽已有节点可微调 | 点击下方示例按钮快速体验
+                在画布上点击添加轨迹点（至少20个）| 拖拽节点微调 | 滚轮缩放 | 右键拖拽平移 | 点击示例按钮快速体验
             </div>
             <div class="btn-row">
                 <button class="btn-primary" onclick="runPrediction()">开始预测</button>
@@ -305,9 +305,12 @@ let groundTruth = null;
 
 const COLORS = ['#ef4444', '#14b8a6', '#8b5cf6'];
 const OBS_MIN = 20;
-const ORIGIN_X = 100;
-const ORIGIN_Y = 400;
-const SCALE = 15;
+let ORIGIN_X = 60;
+let ORIGIN_Y = 280;
+let SCALE = 50;
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
 
 // ── Canvas 坐标（修正CSS缩放） ────────────────────
 function canvasCoords(e) {
@@ -470,6 +473,18 @@ function draw() {
 
 // ── 交互事件（使用 canvasCoords 修正缩放） ────────
 canvas.addEventListener('mousedown', function(e) {
+    // 右键：只平移，不新增点
+    if (e.button === 2 || (e.button === 0 && e.ctrlKey)) {
+        isPanning = true;
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        e.preventDefault();
+        return;
+    }
+
+    // 左键：选节点或新增点
+    if (e.button !== 0) return;
+
     const c = canvasCoords(e);
 
     for (let i = 0; i < points.length; i++) {
@@ -490,7 +505,23 @@ canvas.addEventListener('mousedown', function(e) {
     }
 });
 
+canvas.addEventListener('mouseup', function() { selectedIdx = null; isPanning = false; });
+canvas.addEventListener('mouseleave', function() { selectedIdx = null; isPanning = false; });
+
+// ── 右键拖拽平移 + 缩放 ───────────────────────────
+canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
 canvas.addEventListener('mousemove', function(e) {
+    if (isPanning) {
+        var dx = e.clientX - panStartX;
+        var dy = e.clientY - panStartY;
+        ORIGIN_X += dx;
+        ORIGIN_Y += dy;
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        draw();
+        return;
+    }
     if (selectedIdx === null) return;
     const c = canvasCoords(e);
     const m = toMeter(c.sx, c.sy);
@@ -499,8 +530,26 @@ canvas.addEventListener('mousemove', function(e) {
     draw();
 });
 
-canvas.addEventListener('mouseup', function() { selectedIdx = null; });
-canvas.addEventListener('mouseleave', function() { selectedIdx = null; });
+// ── 滚轮缩放 ──────────────────────────────────────
+canvas.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+
+    // 以鼠标位置为中心缩放
+    var oldScale = SCALE;
+    var zoom = (e.deltaY < 0) ? 1.15 : 1 / 1.15;
+    SCALE = Math.max(5, Math.min(500, SCALE * zoom));
+
+    // 调整原点使缩放中心保持在鼠标指向的米制位置
+    var meterX = (mx - ORIGIN_X) / oldScale;
+    var meterY = (ORIGIN_Y - my) / oldScale;
+    ORIGIN_X = mx - meterX * SCALE;
+    ORIGIN_Y = my + meterY * SCALE;
+
+    draw();
+});
 
 // ── API 调用 ──────────────────────────────────────
 function apiBase() {
@@ -591,12 +640,37 @@ async function handleCSV(event) {
 
         const data = result.data;
 
-        // 使用后端返回的观测轨迹来显示
+        // CSV 使用绝对世界坐标（如 Argoverse，数值可达数千米）
+        // 画布 SCALE=40px/m 只能显示 ±10m 范围，必须相对于首点居中
         if (data.observation && data.observation.length >= OBS_MIN) {
-            points = data.observation.map(function(xy) { return { mx: xy[0], my: xy[1] }; });
+            var offsetX = data.observation[0][0];
+            var offsetY = data.observation[0][1];
+            var lastObsX = data.observation[data.observation.length - 1][0];
+            var lastObsY = data.observation[data.observation.length - 1][1];
+
+            // 观测轨迹：相对于首点居中
+            points = data.observation.map(function(xy) {
+                return { mx: xy[0] - offsetX, my: xy[1] - offsetY };
+            });
+
+            // 预测轨迹：后端返回绝对坐标（相对位移 + 末帧），同步偏移
+            if (data.trajectories) {
+                data.trajectories = data.trajectories.map(function(traj) {
+                    return traj.map(function(xy) {
+                        return [xy[0] - offsetX, xy[1] - offsetY];
+                    });
+                });
+            }
+
+            // Ground truth: draw() 期望相对于末观测点的位移，后端返回绝对坐标
+            if (data.ground_truth) {
+                data.ground_truth = data.ground_truth.map(function(xy) {
+                    return [xy[0] - lastObsX, xy[1] - lastObsY];
+                });
+            }
         } else if (data.last_point) {
             // fallback：只用最后一个观测点
-            points = [{ mx: data.last_point[0], my: data.last_point[1] }];
+            points = [{ mx: 0, my: 0 }];
         }
 
         predData = data;

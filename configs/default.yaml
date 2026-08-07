@@ -4,13 +4,14 @@
 
 # 模型参数
 model:
-  input_dim: 9             # 输入特征维度 (9=完整, 6=无上下文, 4=最小)
+  input_dim: 11            # 输入特征维度 (11=完整+航向+曲率, 9=旧版, 6=无上下文, 4=最小)
   hidden_dim: 128          # MLP 隐藏层维度
   num_mlp_layers: 3        # MLP 编码器层数 (2/3/4)
   dropout: 0.1             # Dropout 比率
-  num_modes: 3             # 多模态数量 K (1/2/3/5)
+  num_modes: 5             # 多模态数量 K (1/2/3/5)
   use_uncertainty: true    # 是否启用不确定性估计
   pooling: "attention"     # 池化方式: "attention" | "mean" | "lstm"
+  use_temporal_conv: true  # 是否启用时序卷积 (depthwise conv1d)
 
 # 数据参数
 data:
@@ -28,10 +29,10 @@ data:
 
 # 训练参数
 training:
-  epochs: 20
+  epochs: 80
   lr: 0.001                # 初始学习率
   weight_decay: 0.0001     # AdamW 权重衰减
-  warmup_epochs: 2         # 学习率预热 epoch 数
+  warmup_epochs: 5         # 学习率预热 epoch 数
   lr_min: 0.000001         # 最小学习率
   grad_clip_norm: 1.0      # 梯度裁剪 max_norm
   use_amp: true            # 自动混合精度
@@ -41,11 +42,12 @@ training:
 loss:
   lambda_traj: 0.7         # 轨迹损失权重
   lambda_mode: 0.3         # 模态分类损失权重
+  lambda_unc: 0.0          # 不确定性 NLL 损失权重（0.0=关闭，0.05~0.1=启用）
   traj_loss_type: "smooth_l1"  # 轨迹损失类型: "smooth_l1" | "mse" | "l1"
 
 # 早停参数
 early_stopping:
-  patience: 5              # 容忍 epoch 数
+  patience: 15             # 容忍 epoch 数
   metric: "val_min_ade"    # 监控指标
   mode: "min"              # 最小化
 

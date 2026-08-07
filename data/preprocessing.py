@@ -198,18 +198,30 @@ def extract_agent_track(
     # 时间步归一化
     t_normalized = np.arange(total_len, dtype=np.float32) / (obs_len - 1)
 
-    # 构建 9 维特征
+    # 航向角（瞬时运动方向），展开消除 ±π 跳变
+    heading = np.unwrap(np.arctan2(vy, vx))  # [total_len]
+
+    # 曲率（航向角变化率，rad/s），裁剪到合理车辆动力学范围
+    curvature = np.zeros_like(heading)
+    if total_len > 1:
+        curvature[1:] = (heading[1:] - heading[:-1]) / 0.1
+        curvature[0] = curvature[1]  # 第一帧复制第二帧
+    curvature = np.clip(curvature, -3.0, 3.0)  # 车辆极限曲率 ±3 rad/s
+
+    # 构建 11 维特征
     history_feats = np.stack([
-        x_centered[:obs_len],                    # x
-        y_centered[:obs_len],                    # y
-        vx[:obs_len],                            # vx
-        vy[:obs_len],                            # vy
-        t_normalized[:obs_len],                  # t/T
-        np.ones(obs_len, dtype=np.float32),      # 常数 1
-        dist_nearest[:obs_len] / 100.0,          # dist/100
-        rel_x[:obs_len] / 100.0,                 # rel_x/100
-        rel_y[:obs_len] / 100.0,                 # rel_y/100
-    ], axis=-1)  # [obs_len, 9]
+        x_centered[:obs_len],                    # 0: x
+        y_centered[:obs_len],                    # 1: y
+        vx[:obs_len],                            # 2: vx
+        vy[:obs_len],                            # 3: vy
+        t_normalized[:obs_len],                  # 4: t/T
+        np.ones(obs_len, dtype=np.float32),      # 5: 常值偏置 1
+        dist_nearest[:obs_len] / 100.0,          # 6: dist/100
+        rel_x[:obs_len] / 100.0,                 # 7: rel_x/100
+        rel_y[:obs_len] / 100.0,                 # 8: rel_y/100
+        heading[:obs_len],                       # 9: 航向角（rad）
+        curvature[:obs_len],                     # 10: 曲率（rad/s）
+    ], axis=-1)  # [obs_len, 11]
 
     # 未来轨迹（仅 x,y，已经居中）
     future = np.stack([
@@ -275,10 +287,14 @@ def classify_scene_type(future_traj: np.ndarray) -> int:
         return 1  # 左转
     elif total_curvature < -TURN_THRESH:
         return 2  # 右转
-    elif avg_speed < 0.3 * np.max(velocities) if np.max(velocities) > 0 else False:
-        return 4  # 路口（速度骤降）
-    else:
-        return 0  # 直行
+
+    # 路口判定：速度骤降到峰值速度的 30% 以下
+    max_v = np.max(velocities)
+    is_slow = max_v > 0 and avg_speed < 0.3 * max_v
+    if is_slow:
+        return 4  # 路口/交叉
+
+    return 0  # 直行
 
 
 def process_csv_file(

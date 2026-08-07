@@ -32,6 +32,7 @@ class TrajectoryModel(nn.Module):
         pred_len: int = 30,
         pooling_type: str = "attention",
         use_uncertainty: bool = True,
+        use_temporal_conv: bool = True,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -47,6 +48,7 @@ class TrajectoryModel(nn.Module):
             num_mlp_layers=num_mlp_layers,
             dropout=dropout,
             pooling_type=pooling_type,
+            use_temporal_conv=use_temporal_conv,
         )
 
         # 多模态预测器

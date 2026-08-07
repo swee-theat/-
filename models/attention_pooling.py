@@ -40,9 +40,9 @@ class AttentionPooling(nn.Module):
         q = self.query.unsqueeze(0).unsqueeze(-1)  # [1, H, 1]
         scores = torch.bmm(x, q.expand(x.shape[0], -1, -1)).squeeze(-1)  # [B, T]
 
-        # 缩放（dot-product attention 标准做法，防止内积值过大）
+        # 标准 dot-product attention 缩放: 1/sqrt(d_k)
         d_k = x.shape[-1]
-        scores = scores / (d_k ** 0.25)  # 温和缩放
+        scores = scores / (d_k ** 0.5)
 
         # Softmax 归一化
         attn_weights = torch.softmax(scores, dim=-1)  # [B, T]

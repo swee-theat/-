@@ -21,7 +21,7 @@ def collate_fn(batch: list) -> dict:
     seq_ids = [item["seq_id"] for item in batch]
 
     return {
-        "history": histories,       # [B, T_obs, 9]
+        "history": histories,       # [B, T_obs, input_dim]
         "future": futures,            # [B, T_pred, 2]
         "category": categories,       # [B]
         "seq_id": seq_ids,            # list[str]

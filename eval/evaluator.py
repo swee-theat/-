@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 from tqdm import tqdm
 import pandas as pd
 
-from .metrics import compute_all_metrics
+from .metrics import compute_min_ade, compute_min_fde, compute_ade, compute_fde
 
 
 CATEGORY_NAMES = {0: "直行", 1: "左转", 2: "右转", 3: "掉头", 4: "路口"}
@@ -56,21 +56,27 @@ class Evaluator:
             output = self.model(history)
             trajectories = output["trajectories"]
 
-            # 逐样本计算指标
+            # 批量计算逐样本指标（一次前向，同时算所有样本）
+            min_ade_vals = compute_min_ade(trajectories, future)  # [B]
+            min_fde_vals = compute_min_fde(trajectories, future)  # [B]
+            best_idx = output["mode_probs"].argmax(dim=-1)        # [B]
+            ade_vals = compute_ade(trajectories, future, best_idx)  # [B]
+            fde_vals = compute_fde(trajectories, future, best_idx)  # [B]
             B = trajectories.shape[0]
+
             for i in range(B):
-                sample_traj = trajectories[i:i+1]  # [1, K, T_pred, 2]
-                sample_gt = future[i:i+1]          # [1, T_pred, 2]
                 cat = int(categories[i].item())
-
-                metrics = compute_all_metrics(sample_traj, sample_gt)
-                metrics["category"] = cat
-                metrics["category_name"] = CATEGORY_NAMES.get(cat, "未知")
-                metrics["seq_id"] = seq_ids[i]
-                all_metrics.append(metrics)
-
-                # 按类别聚合
                 cat_name = CATEGORY_NAMES.get(cat, "未知")
+                metrics = {
+                    "ade": ade_vals[i].item(),
+                    "fde": fde_vals[i].item(),
+                    "min_ade": min_ade_vals[i].item(),
+                    "min_fde": min_fde_vals[i].item(),
+                    "category": cat,
+                    "category_name": cat_name,
+                    "seq_id": seq_ids[i],
+                }
+                all_metrics.append(metrics)
                 per_category_metrics[cat_name].append(metrics)
 
             pbar.set_postfix({"样本数": len(all_metrics)})
@@ -98,7 +104,7 @@ class Evaluator:
         if not metrics_list:
             return {}
 
-        keys = ["ade", "fde", "min_ade", "min_fde", "miss_rate_2m", "endpoint_hit_3m"]
+        keys = ["ade", "fde", "min_ade", "min_fde"]  # 逐样本指标不含 miss_rate/endpoint_hit
         agg = {}
         for key in keys:
             values = [m.get(key, 0.0) for m in metrics_list if key in m]

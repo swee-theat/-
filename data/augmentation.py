@@ -79,9 +79,10 @@ class TrajectoryAugmentation:
         history[:, :, 2:4] *= scale
         future *= scale
 
-        # 也缩放距离相关特征
+        # 也缩放距离相关特征（修复广播：scale 需与 history 同维度）
         if history.shape[-1] >= 7:
-            history[:, :, 6:9] *= scale.squeeze(-1)
+            scale_3d = scale.squeeze(-1).unsqueeze(-1)  # [B, 1] → [B, 1, 1]
+            history[:, :, 6:9] *= scale_3d
 
         # 3. 高斯噪声（仅对位置坐标）
         noise = torch.randn_like(history[:, :, :2]) * self.noise_std
