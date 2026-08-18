@@ -18,7 +18,7 @@ from .uncertainty_estimator import UncertaintyEstimator
 class TrajectoryModel(nn.Module):
     """轻量化多模态轨迹预测模型。
 
-    目标参数量: ~198K
+    目标参数量: ~244K（per-mode 独立不确定性头）
     目标硬件: RTX 3060 (6GB) 可完整训练
     """
 
@@ -66,7 +66,7 @@ class TrajectoryModel(nn.Module):
                 num_modes=num_modes,
                 pred_len=pred_len,
                 dropout=dropout,
-                share_across_modes=True,
+                share_across_modes=False,  # 独立头：每个模态各自预测方差，避免所有模态方差相同
             )
         else:
             self.uncertainty = None

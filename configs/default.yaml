@@ -23,7 +23,7 @@ data:
   num_workers: 4           # DataLoader 进程数（Windows 建议 ≤4）
   augmentation:
     enable: true
-    rotation_range: 3.14159  # 随机旋转范围 [-pi, pi]
+    rotation_range: 0.5236  # 随机旋转范围 [-30°, +30°]（车辆正常转向范围，避免倒车）
     scale_range: [0.9, 1.1]  # 随机缩放范围
     noise_std: 0.02          # 高斯噪声标准差
 

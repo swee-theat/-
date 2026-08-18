@@ -22,8 +22,8 @@ class TrajectoryAugmentation:
         self.scale_range = scale_range
         self.noise_std = noise_std
 
-    def _random_rotation_matrix(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """生成随机旋转矩阵 [B, 2, 2]."""
+    def _random_rotation_matrix(self, batch_size: int, device: torch.device) -> tuple:
+        """生成随机旋转矩阵 [B, 2, 2] 及对应的旋转角 [B]。"""
         angle = (torch.rand(batch_size, device=device) * 2 - 1) * self.rotation_range
         cos_a = torch.cos(angle)
         sin_a = torch.sin(angle)
@@ -31,17 +31,17 @@ class TrajectoryAugmentation:
             torch.stack([cos_a, -sin_a], dim=-1),
             torch.stack([sin_a, cos_a], dim=-1),
         ], dim=-2)
-        return rot
+        return rot, angle
 
     def __call__(
         self,
-        history: torch.Tensor,  # [B, T_obs, 9]
+        history: torch.Tensor,  # [B, T_obs, 11]
         future: torch.Tensor,    # [B, T_pred, 2]
     ) -> tuple:
         """对一批轨迹应用数据增强。
 
         参数:
-            history: 历史轨迹 [B, T_obs, 9]
+            history: 历史轨迹 [B, T_obs, 11]（11 维含航向角/曲率）
             future: 未来轨迹真值 [B, T_pred, 2]
 
         返回:
@@ -54,7 +54,7 @@ class TrajectoryAugmentation:
         device = history.device
 
         # 1. 随机旋转：对 x,y 坐标和 vx,vy 速度分量同步旋转
-        rot = self._random_rotation_matrix(B, device)  # [B, 2, 2]
+        rot, angle = self._random_rotation_matrix(B, device)  # rot [B,2,2], angle [B]
 
         # 旋转 position (x, y)
         pos = history[:, :, :2]  # [B, T, 2]
@@ -65,6 +65,12 @@ class TrajectoryAugmentation:
         vel = history[:, :, 2:4]  # [B, T, 2]
         vel_rot = torch.bmm(vel, rot.transpose(-2, -1))  # [B, T, 2]
         history[:, :, 2:4] = vel_rot
+
+        # 更新航向角（index 9）：坐标旋转 angle 后，航向角同步 + angle，
+        # 否则航向角特征与旋转后的 (vx, vy) 方向矛盾。
+        # 曲率（index 10）是航向角差分，旋转不变量，无需更新。
+        if history.shape[-1] > 9:
+            history[:, :, 9] = history[:, :, 9] + angle.unsqueeze(-1)
 
         # 旋转未来轨迹
         future_rot = torch.bmm(future, rot.transpose(-2, -1))  # [B, T, 2]

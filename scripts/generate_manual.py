@@ -34,7 +34,7 @@ doc.add_heading("一、系统概述", level=1)
 doc.add_heading("1.1 项目定位", level=2)
 doc.add_paragraph(
     "本系统是一个面向低速场景（校园/园区无人车）的轻量化多模态轨迹预测系统。"
-    "核心目标：用最少的参数（195K）和最低的算力（RTX 3060 6GB），"
+    "核心目标：用最少的参数（244K）和最低的算力（RTX 3060 6GB），"
     "在 Argoverse 真实数据上做出可用的多模态轨迹预测。"
     "从数据管道、模型训练、消融实验、可视化分析到 ONNX 部署全流程覆盖，"
     "可直接部署到 Intel NUC 实体小车。"
@@ -50,7 +50,7 @@ doc.add_paragraph(
 doc.add_heading("1.3 核心技术指标", level=2)
 t = doc.add_table(rows=8, cols=2, style="Light Grid Accent 1")
 for i, (k, v) in enumerate([
-    ("模型参数量", "194,733 (目标 200K 以内)"),
+    ("模型参数量", "243,357 (目标 250K 以内, per-mode 独立不确定性)"),
     ("模态数 K", "5"),
     ("输入特征", "11维 [x,y,vx,vy,t/T,1,dist,rel_x,rel_y,heading,curvature]"),
     ("观测/预测窗口", "20帧(2s) / 30帧(3s) @10Hz"),
@@ -67,7 +67,7 @@ doc.add_paragraph(
     "编码器: Linear(11->128)+LayerNorm -> 3xMLPBlock(残差) -> "
     "DepthwiseConv1d(时序混合) -> AttentionPooling(标准1/sqrt(d_k))\n"
     "预测器: 模态选择器(128->64->5) + K=5个轨迹分支(128->128->60)\n"
-    "不确定性: Linear(128->64->60)+Softplus -> 每帧每维方差\n"
+    "不确定性: K=5 个独立头 Linear(128->64->60)+Softplus -> 每模态每帧每维方差\n"
     "损失: L = 0.7*WTA_smooth_l1 + 0.3*CE + 0.05*NLL(可选)"
 )
 
@@ -188,14 +188,36 @@ for s in [
 doc.add_heading("5.3 话题接口", level=2)
 doc.add_paragraph(
     "/odom -> 订阅(20Hz) 里程计输入\n"
-    "/predicted_trajectories -> 发布(10Hz) 预测路径可视化"
+    "/predicted_trajectories -> 发布(10Hz) 预测路径可视化\n\n"
+    "注意频率关系: 里程计 20Hz 与训练数据 10Hz(dt=0.1s) 不一致，"
+    "节点内部必须将 odom 降采样到 10Hz 后再入缓冲区，详见 5.5。"
 )
 
 doc.add_heading("5.4 预测节点数据流", level=2)
 doc.add_paragraph(
-    "/odom(20Hz) -> 提取(x,y,yaw)存20帧 -> 每10Hz触发预测 "
+    "/odom(20Hz) -> 按时间戳降采样到10Hz -> 提取(x,y,yaw)存20帧(2s) "
     "-> 末帧居中归一化 -> 11维特征 -> ONNX推理(0.21ms) "
     "-> 5条轨迹还原绝对坐标 -> MarkerArray"
+)
+
+doc.add_heading("5.5 频率一致性（关键）", level=2)
+doc.add_paragraph(
+    "训练数据 Argoverse 是 10Hz，即相邻帧时间间隔 dt=0.1s；"
+    "而实体小车 /odom 为 20Hz(dt=0.05s)。若直接将 20Hz 帧入库，"
+    "会出现三类错误："
+)
+for f in [
+    "速度被高估 2 倍: 代码按 Δx/0.1 算速度，实际间隔是 0.05s，真实速度为 Δx/0.05",
+    "观测窗口减半: 20 帧缓冲区只覆盖 1 秒，而非模型期望的 2 秒",
+    "曲率被高估 2 倍: 航向变化率同样按错误 dt 差分",
+]:
+    doc.add_paragraph(f, style="List Bullet")
+
+doc.add_paragraph(
+    "正确做法（trajectory_predictor.py 已实现）：在 _odom_callback 中"
+    "用 msg.header.stamp 判断，距上次采样不足 0.1s 的帧直接丢弃，"
+    "实现 odom 20Hz → 10Hz 降采样。这样采样频率、预测频率、训练频率"
+    "三者统一为 10Hz，速度/曲率/时间归一化全部按 dt=0.1s 计算才是正确的。"
 )
 
 doc.add_page_break()

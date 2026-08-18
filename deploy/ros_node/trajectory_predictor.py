@@ -4,8 +4,9 @@
 
 数据流:
     /odom (Odometry, 20Hz)
-        → 维护 20 帧历史缓冲区
-        → 每帧提取 11 维特征
+        → 降采样到 10Hz (dt=0.1s，与训练一致)
+        → 维护 20 帧历史缓冲区 (2s)
+        → 提取 11 维特征
         → ONNX Runtime CPU 推理
         → 5 条预测轨迹 (K=5, 30 帧, 3s)
         → 发布 visualization_msgs/MarkerArray → RViz 显示
@@ -37,7 +38,7 @@ OBS_LEN = 20          # 观测帧数 (2s @ 10Hz)
 PRED_LEN = 30         # 预测帧数 (3s @ 10Hz)
 INPUT_DIM = 11        # 特征维度
 NUM_MODES = 5         # K 模态数
-PRED_FREQ = 10.0      # 预测输出频率 (Hz)，里程计是 20Hz，降采样到 10Hz
+TARGET_FREQ = 10.0    # 采样+预测频率 (Hz)。训练数据是 10Hz (dt=0.1s)，odom 20Hz 必须降采样
 MODEL_PATH = "deploy/trajectory_model.onnx"  # ONNX 模型路径
 
 # 模态颜色 (RGBA)
@@ -60,9 +61,10 @@ class TrajectoryPredictor:
         self.session = ort.InferenceSession(MODEL_PATH)
         self.input_name = self.session.get_inputs()[0].name
 
-        # 历史缓冲区：存储 [x, y, yaw] × 20 帧
+        # 历史缓冲区：存储 [x, y, yaw] × 20 帧（10Hz 采样，dt=0.1s）
         self.history = deque(maxlen=OBS_LEN)
-        self._last_predict_time = rospy.Time.now()
+        # 用 Time(0) 初始化，保证第一帧 odom 一定被接受
+        self._last_sample_time = rospy.Time(0)
 
         # 订阅里程计
         rospy.Subscriber("/odom", Odometry, self._odom_callback)
@@ -78,7 +80,19 @@ class TrajectoryPredictor:
 
     # ── 里程计回调 ──────────────────────────────────
     def _odom_callback(self, msg: Odometry):
-        """提取 (x, y, yaw) 并存入缓冲区。"""
+        """提取 (x, y, yaw)，降采样到 10Hz 后存入缓冲区。
+
+        关键：用 msg.header.stamp（odom 时间戳）而非 rospy.Time.now() 判断，
+        保证降采样间隔精确对应 odom 采样时刻，历史缓冲区相邻帧 dt=0.1s，
+        与训练数据（Argoverse 10Hz）严格一致。否则 20Hz 数据直接入库会让
+        速度/曲率被高估 2 倍，20 帧只覆盖 1 秒而非模型期望的 2 秒。
+        """
+        # 降采样：odom(20Hz) → 10Hz，丢弃高频帧
+        now = msg.header.stamp
+        if (now - self._last_sample_time).to_sec() < (1.0 / TARGET_FREQ):
+            return  # 距上次采样不足 0.1s，丢弃
+        self._last_sample_time = now
+
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
 
@@ -90,14 +104,9 @@ class TrajectoryPredictor:
 
         self.history.append((x, y, yaw))
 
-        # 控制预测频率（10Hz，里程计是 20Hz）
-        now = rospy.Time.now()
+        # 采样频率 = 预测频率 = 10Hz，攒满 20 帧即可预测
         if len(self.history) < OBS_LEN:
             return
-        if (now - self._last_predict_time).to_sec() < (1.0 / PRED_FREQ):
-            return
-
-        self._last_predict_time = now
         self._predict_and_publish()
 
     # ── 特征计算 ────────────────────────────────────

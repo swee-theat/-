@@ -1,15 +1,23 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""两阶段不确定性训练脚本。
+"""两阶段不确定性训练脚本（支持跳过阶段 A 直接微调）。
 
 阶段 A: lambda_unc=0.0  正常训练至收敛（轨迹预测 + 模态选择）
 阶段 B: lambda_unc=0.05 冻结编码器+预测器，仅微调不确定性头
+
+支持两种运行模式：
+  1. 完整两阶段（SKIP_STAGE_A=False）：
+     Stage A 从头训练 30 epoch → Stage B 微调不确定性头
+  2. 仅微调（SKIP_STAGE_A=True，推荐）：
+     直接从 START_CKPT（迁移后的独立头 checkpoint）加载，
+     冻结编码器+预测器，仅微调不确定性头，
+     让 5 个独立头在 NLL 损失下分化出各模态不同的方差。
 
 用法:
     python scripts/train_with_uncertainty.py
 
 输出:
-    outputs/checkpoints/unc_stage_a/best_model.pt    # 阶段 A 最佳模型
+    outputs/checkpoints/unc_stage_a/best_model.pt    # 阶段 A 最佳模型（完整模式）
     outputs/checkpoints/unc_stage_b/best_model.pt    # 阶段 B 最佳模型（不确定性已校准）
 """
 
@@ -26,6 +34,12 @@ from models.trajectory_model import TrajectoryModel
 from data.dataset import ArgoverseTrajectoryDataset
 from data.dataloader import create_dataloader
 from train.trainer import Trainer
+
+# ── 运行模式开关 ──────────────────────────────────────
+SKIP_STAGE_A = True   # True=跳过阶段A，直接从迁移后 checkpoint 微调不确定性头
+START_CKPT = "outputs/checkpoints/full_train_K5/best_model_indep.pt"  # 阶段B起始权重
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def count_trainable(model):
@@ -49,27 +63,16 @@ def freeze_except_uncertainty(model):
 def main():
     t0 = time.time()
 
-    # ── 阶段 A：正常训练 ──────────────────────────────
-    print("=" * 58)
-    print("  阶段 A: 正常训练 (lambda_unc=0.0)")
-    print("=" * 58)
-
     cfg = config_to_dict(load_config("configs/default.yaml"))
-    cfg["training"]["epochs"] = 30          # 阶段 A 训练 30 epoch
-    cfg["training"]["warmup_epochs"] = 3
-    cfg["loss"]["lambda_unc"] = 0.0         # 不启用 NLL
-    cfg["logging"]["log_dir"] = "outputs/logs/unc_stage_a"
-    cfg["logging"]["checkpoint_dir"] = "outputs/checkpoints/unc_stage_a"
-
-    set_seed(42)
-    logger_a = setup_logger(cfg["logging"]["log_dir"], "stage_a")
-
     mc = cfg["model"]
+
+    # ── 数据加载（两阶段共用）─────────────────────────
     train_ds = ArgoverseTrajectoryDataset("data/processed/train.npz")
     val_ds = ArgoverseTrajectoryDataset("data/processed/val.npz")
     train_loader = create_dataloader(train_ds, batch_size=64, shuffle=True, num_workers=0)
     val_loader = create_dataloader(val_ds, batch_size=64, shuffle=False, num_workers=0)
 
+    # ── 模型构造（两阶段共用）─────────────────────────
     model = TrajectoryModel(
         input_dim=mc["input_dim"], hidden_dim=mc["hidden_dim"],
         num_mlp_layers=mc.get("num_mlp_layers", 3), dropout=mc.get("dropout", 0.1),
@@ -78,24 +81,50 @@ def main():
         use_temporal_conv=mc.get("use_temporal_conv", True),
     )
     total_params, _ = count_parameters(model)
-    logger_a.info(f"参数量: {total_params:,}")
+    print(f"模型参数量: {total_params:,}")
 
-    trainer_a = Trainer(model=model, train_loader=train_loader, val_loader=val_loader,
-                        config=cfg, logger=logger_a, tb_writer=None)
-    result_a = trainer_a.train()
+    best_ade_a = float("nan")
 
-    best_ade_a = result_a["best_val_min_ade"]
-    print(f"\n阶段 A 完成: minADE = {best_ade_a:.4f}, epoch = {result_a['best_epoch']+1}")
+    if SKIP_STAGE_A:
+        # ── 跳过阶段 A：直接从迁移后 checkpoint 加载 ──
+        print("=" * 58)
+        print("  跳过阶段 A：从迁移后 checkpoint 加载")
+        print("=" * 58)
+        checkpoint = torch.load(START_CKPT, map_location=DEVICE, weights_only=False)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        print(f"  已加载: {START_CKPT} (epoch {checkpoint.get('epoch', '?')})")
+    else:
+        # ── 阶段 A：正常训练 ──────────────────────────
+        print("=" * 58)
+        print("  阶段 A: 正常训练 (lambda_unc=0.0)")
+        print("=" * 58)
+
+        cfg["training"]["epochs"] = 30          # 阶段 A 训练 30 epoch
+        cfg["training"]["warmup_epochs"] = 3
+        cfg["loss"]["lambda_unc"] = 0.0         # 不启用 NLL
+        cfg["logging"]["log_dir"] = "outputs/logs/unc_stage_a"
+        cfg["logging"]["checkpoint_dir"] = "outputs/checkpoints/unc_stage_a"
+
+        set_seed(42)
+        logger_a = setup_logger(cfg["logging"]["log_dir"], "stage_a")
+        logger_a.info(f"参数量: {total_params:,}")
+
+        trainer_a = Trainer(model=model, train_loader=train_loader, val_loader=val_loader,
+                            config=cfg, logger=logger_a, tb_writer=None)
+        result_a = trainer_a.train()
+
+        best_ade_a = result_a["best_val_min_ade"]
+        print(f"\n阶段 A 完成: minADE = {best_ade_a:.4f}, epoch = {result_a['best_epoch']+1}")
+
+        # 加载阶段 A 最佳模型（供阶段 B 微调）
+        ckpt_path = "outputs/checkpoints/unc_stage_a/best_model.pt"
+        checkpoint = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     # ── 阶段 B：冻结 + 不确定性微调 ──────────────────
     print("\n" + "=" * 58)
     print("  阶段 B: 不确定性 NLL 微调 (lambda_unc=0.05)")
     print("=" * 58)
-
-    # 加载阶段 A 最佳模型
-    ckpt_path = "outputs/checkpoints/unc_stage_a/best_model.pt"
-    checkpoint = torch.load(ckpt_path, map_location="cuda", weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"])
 
     # 冻结除不确定性头外的所有参数
     freeze_except_uncertainty(model)
@@ -120,9 +149,10 @@ def main():
     # ── 总结 ──────────────────────────────────────────
     elapsed = (time.time() - t0) / 60
     print("\n" + "=" * 58)
-    print("  两阶段不确定性训练完成")
+    print("  不确定性微调完成" + ("（跳过阶段A）" if SKIP_STAGE_A else "（完整两阶段）"))
     print("=" * 58)
-    print(f"  阶段 A minADE: {best_ade_a:.4f}")
+    if not SKIP_STAGE_A:
+        print(f"  阶段 A minADE: {best_ade_a:.4f}")
     print(f"  阶段 B minADE: {result_b['best_val_min_ade']:.4f}")
     print(f"  不确定性头参数: {trainable_a:,}")
     print(f"  总耗时: {elapsed:.0f} 分钟")

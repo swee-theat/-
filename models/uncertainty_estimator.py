@@ -23,7 +23,7 @@ class UncertaintyEstimator(nn.Module):
         num_modes: int = 3,
         pred_len: int = 30,
         dropout: float = 0.1,
-        share_across_modes: bool = True,
+        share_across_modes: bool = False,
     ):
         """初始化不确定性估计器。
 
@@ -32,7 +32,9 @@ class UncertaintyEstimator(nn.Module):
             num_modes: 模态数量 K（仅在 share_across_modes=False 时区分）
             pred_len: 预测帧数
             dropout: Dropout 比率
-            share_across_modes: 是否对所有模态共享不确定性头（默认 True 以节省参数）
+            share_across_modes: 是否对所有模态共享不确定性头。
+                默认 False（独立头），使每个模态输出各自不同的方差，
+                让不确定性具备区分不同模态置信度的意义。
         """
         super().__init__()
         self.share_across_modes = share_across_modes

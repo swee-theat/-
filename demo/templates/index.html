@@ -204,7 +204,7 @@
     <div class="badge-row">
         <span class="chip" id="chipParams">145K 参数</span>
         <span class="chip" id="chipDevice">--</span>
-        <span class="chip">K=3 模态</span>
+        <span class="chip">K=5 模态</span>
         <span class="chip">20->30 帧</span>
     </div>
 </div>
@@ -303,7 +303,11 @@ let selectedIdx = null;
 let predData = null;
 let groundTruth = null;
 
-const COLORS = ['#ef4444', '#14b8a6', '#8b5cf6'];
+// 预定义足够多的颜色（随模型模态数动态截取，不硬编码 K）
+const COLOR_PALETTE = ['#ef4444', '#14b8a6', '#8b5cf6', '#f59e0b', '#ec4899',
+                       '#06b6d4', '#84cc16', '#f97316', '#a855f7', '#e11d48'];
+let COLORS = COLOR_PALETTE;
+let NUM_MODES = 5;  // 由后端 API 动态设定
 const OBS_MIN = 20;
 let ORIGIN_X = 60;
 let ORIGIN_Y = 280;
@@ -770,9 +774,20 @@ async function init() {
         var data = await apiFetch('/api/v1/model_info');
         if (data.success) {
             var p = data.model.parameters;
+            var k = data.model.k_modes;
             document.getElementById('chipParams').textContent = (p / 1000).toFixed(0) + 'K 参数';
             document.getElementById('chipDevice').textContent = data.model.device === 'cuda' ? 'GPU' : 'CPU';
             document.getElementById('nParams').textContent = (p / 1000).toFixed(0) + 'K';
+            // 动态适配 K 值：颜色和 chip 文本由后端决定，彻底消除硬编码不一致
+            COLORS = COLOR_PALETTE.slice(0, k);
+            NUM_MODES = k;
+            // 更新顶部所有 chip 中的模态数
+            var chips = document.querySelectorAll('.chip');
+            for (var i = 0; i < chips.length; i++) {
+                if (chips[i].textContent.indexOf('模态') !== -1) {
+                    chips[i].textContent = 'K=' + k + ' 模态';
+                }
+            }
         }
         await loadExample('straight');
     } catch (e) {

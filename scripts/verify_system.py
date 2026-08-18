@@ -13,6 +13,7 @@ import numpy as np
 
 from utils.param_counter import count_parameters
 from utils.seed import set_seed
+from utils.config import load_config, config_to_dict
 from models.trajectory_model import TrajectoryModel
 from models.attention_pooling import AttentionPooling, MeanPooling, LSTMPooling
 from train.losses import CombinedLoss
@@ -44,9 +45,9 @@ def test_model_build():
     )
 
     total_params, _ = count_parameters(model)
-    assert total_params < 200_000, f"参数量 {total_params} 超过 200K 目标！"
+    assert total_params < 250_000, f"参数量 {total_params} 超过 250K 目标！"
     assert total_params > 50_000, f"参数量 {total_params} 过少，可能有问题"
-    print(f"  [OK] 参数量: {total_params:,} (目标 < 200K)")
+    print(f"  [OK] 参数量: {total_params:,} (目标 < 250K)")
 
     return model
 
@@ -58,6 +59,7 @@ def test_forward_pass(model):
     print("=" * 60)
 
     B, T_obs, T_pred = 16, 20, 30
+    K = model.num_modes
     input_dim = model.input_dim
     history = torch.randn(B, T_obs, input_dim)
 
@@ -65,14 +67,14 @@ def test_forward_pass(model):
     with torch.no_grad():
         output = model(history)
 
-    # 验证输出形状
-    assert output["trajectories"].shape == (B, 3, T_pred, 2), \
+    # 验证输出形状（K 从模型读取，不硬编码）
+    assert output["trajectories"].shape == (B, K, T_pred, 2), \
         f"轨迹形状错误: {output['trajectories'].shape}"
-    assert output["mode_probs"].shape == (B, 3), \
+    assert output["mode_probs"].shape == (B, K), \
         f"模态概率形状错误: {output['mode_probs'].shape}"
-    assert output["mode_logits"].shape == (B, 3), \
+    assert output["mode_logits"].shape == (B, K), \
         f"模态 logits 形状错误: {output['mode_logits'].shape}"
-    assert output["uncertainties"].shape == (B, 3, T_pred, 2), \
+    assert output["uncertainties"].shape == (B, K, T_pred, 2), \
         f"不确定性形状错误: {output['uncertainties'].shape}"
     assert output["encoded_feature"].shape == (B, 128), \
         f"编码特征形状错误: {output['encoded_feature'].shape}"

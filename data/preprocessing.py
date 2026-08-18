@@ -1,6 +1,6 @@
-"""数据预处理模块：将 Argoverse CSV 原始数据转换为 9 维特征。
+"""数据预处理模块：将 Argoverse CSV 原始数据转换为 11 维特征。
 
-特征设计（9 维）:
+特征设计（11 维）:
     [0] x:               居中的 X 坐标
     [1] y:               居中的 Y 坐标
     [2] vx:              X 方向速度
@@ -10,6 +10,8 @@
     [6] dist_nearest/100: 到最近智能体的归一化距离
     [7] rel_x/100:        相对最近智能体的 X 位移
     [8] rel_y/100:        相对最近智能体的 Y 位移
+    [9] heading:          航向角（rad，unwrap 后）
+    [10] curvature:       曲率（rad/s，裁剪 ±3.0）
 """
 
 import numpy as np

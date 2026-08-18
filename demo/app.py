@@ -34,7 +34,7 @@ PRED_LEN = 30         # 预测帧数 (3秒)
 INPUT_DIM = 11        # 特征维度 (11=完整+航向+曲率)
 HIDDEN_DIM = 128
 NUM_MODES = 5         # K=5 多模态
-CHECKPOINT_PATH = "outputs/checkpoints/full_train_K5/best_model.pt"
+CHECKPOINT_PATH = "outputs/checkpoints/full_train_K5/best_model_indep.pt"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -182,7 +182,7 @@ def run_inference(obs_traj: np.ndarray) -> dict:
     last_point = obs_traj[-1].copy()
     obs_centered = obs_traj - last_point
 
-    # 计算 9 维特征
+    # 计算 11 维特征
     features = compute_features(obs_centered)
     input_tensor = torch.from_numpy(features).unsqueeze(0).float().to(DEVICE)
 
@@ -355,10 +355,14 @@ def examples():
         },
         {
             "name": "curve",
-            "description": "S弯道 (~2 m/s, 低频S形曲线)",
-            # 真实S弯：2秒内约半个周期，曲率方向变化一次（先右后左）
-            # 频率 0.1 = 20帧覆盖 ~2 rad，接近真实山路连续弯道节奏
-            "trajectory": [[float(i * 0.2), float(np.sin(i * 0.1) * 2.0)] for i in range(OBS_LEN)],
+            "description": "恒定曲率右转弯 (~1.9 m/s, 半径5m)",
+            # 真实车辆转弯：恒定角速度，圆弧轨迹（非正弦振荡 S 弯）
+            # 车速 2m/s，半径 5m，角速度 ω=v/R=0.4 rad/s，20帧=2秒，总转角约 45°
+            # 曲率恒定 = 1/R = 0.2/m，与 Argoverse 真实车辆转弯一致
+            "trajectory": [
+                [float(5.0 * np.sin(i * 0.04)), float(5.0 * (1.0 - np.cos(i * 0.04)))]
+                for i in range(OBS_LEN)
+            ],
         },
         {
             "name": "lane_change",
