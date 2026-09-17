@@ -11,7 +11,7 @@ import numpy as np
 from pathlib import Path
 import argparse
 
-from data.preprocessing import process_csv_file
+from data.preprocessing import process_csv_file, city_to_id
 from utils.seed import set_seed
 
 
@@ -44,7 +44,7 @@ def main():
     batch = []
 
     for i, csv_path in enumerate(train_csvs):
-        samples = process_csv_file(str(csv_path), args.obs_len, args.pred_len)
+        samples = process_csv_file(str(csv_path), args.obs_len, args.pred_len, split="train")
         batch.extend(samples)
 
         if len(batch) >= batch_size:
@@ -63,7 +63,7 @@ def main():
     print("\n处理验证集...")
     val_samples = []
     for i, csv_path in enumerate(val_csvs):
-        samples = process_csv_file(str(csv_path), args.obs_len, args.pred_len)
+        samples = process_csv_file(str(csv_path), args.obs_len, args.pred_len, split="val")
         val_samples.extend(samples)
         if (i + 1) % 5000 == 0:
             print(f"  验证进度: {i+1}/{len(val_csvs)} ({len(val_samples):,} 样本)")
@@ -82,6 +82,7 @@ def main():
     futures = np.array([s["future"] for s in all_samples], dtype=np.float32)
     categories = np.array([s["category"] for s in all_samples], dtype=np.int32)
     seq_ids = np.array([s["seq_id"] for s in all_samples])
+    cities = np.array([city_to_id(s.get("city", "UNK")) for s in all_samples], dtype=np.int32)
 
     # 确定性打乱
     rng = np.random.RandomState(42)
@@ -91,6 +92,7 @@ def main():
     futures = futures[indices]
     categories = categories[indices]
     seq_ids = seq_ids[indices]
+    cities = cities[indices]
 
     # 7:1:2 划分
     train_end = int(n * 0.7)
@@ -109,6 +111,7 @@ def main():
             futures=futures[s],
             categories=categories[s],
             seq_ids=seq_ids[s],
+            cities=cities[s],
         )
         count = s.stop - s.start
         print(f"  {split_name}: {count:,} 样本 → {output_dir / f'{split_name}.npz'}")

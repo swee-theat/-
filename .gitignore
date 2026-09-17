@@ -28,3 +28,6 @@ Thumbs.db
 # 虚拟环境
 venv/
 env/
+
+# Trae 编辑器临时目录
+.trae-html-share-packages/

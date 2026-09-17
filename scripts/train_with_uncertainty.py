@@ -67,8 +67,14 @@ def main():
     mc = cfg["model"]
 
     # ── 数据加载（两阶段共用）─────────────────────────
-    train_ds = ArgoverseTrajectoryDataset("data/processed/train.npz")
-    val_ds = ArgoverseTrajectoryDataset("data/processed/val.npz")
+    train_ds = ArgoverseTrajectoryDataset(
+        "data/processed/train.npz",
+        lane_graphs_path="data/processed/lane_graphs.npz",
+    )
+    val_ds = ArgoverseTrajectoryDataset(
+        "data/processed/val.npz",
+        lane_graphs_path="data/processed/lane_graphs.npz",
+    )
     train_loader = create_dataloader(train_ds, batch_size=64, shuffle=True, num_workers=0)
     val_loader = create_dataloader(val_ds, batch_size=64, shuffle=False, num_workers=0)
 
@@ -79,6 +85,9 @@ def main():
         num_modes=mc["num_modes"], pred_len=cfg["data"].get("pred_len", 30),
         pooling_type=mc.get("pooling", "attention"), use_uncertainty=True,
         use_temporal_conv=mc.get("use_temporal_conv", True),
+        use_lane=mc.get("use_lane", True),
+        use_city=mc.get("use_city", True),
+        branch_hidden_dim=mc.get("branch_hidden_dim", 96),
     )
     total_params, _ = count_parameters(model)
     print(f"模型参数量: {total_params:,}")
@@ -143,7 +152,8 @@ def main():
     logger_b.info(f"可训练参数(仅不确定性头): {trainable_a:,}")
 
     trainer_b = Trainer(model=model, train_loader=train_loader, val_loader=val_loader,
-                        config=cfg, logger=logger_b, tb_writer=None)
+                        config=cfg, logger=logger_b, tb_writer=None,
+                        monitor_metric="val_loss")  # Stage B 冻结轨迹预测，minADE 不变，改用含 NLL 的 val_loss 监控
     result_b = trainer_b.train()
 
     # ── 总结 ──────────────────────────────────────────
@@ -153,7 +163,7 @@ def main():
     print("=" * 58)
     if not SKIP_STAGE_A:
         print(f"  阶段 A minADE: {best_ade_a:.4f}")
-    print(f"  阶段 B minADE: {result_b['best_val_min_ade']:.4f}")
+    print(f"  阶段 B best_{result_b['monitor_metric']}: {result_b['best_metric']:.4f}")
     print(f"  不确定性头参数: {trainable_a:,}")
     print(f"  总耗时: {elapsed:.0f} 分钟")
     print(f"  模型: outputs/checkpoints/unc_stage_b/best_model.pt")

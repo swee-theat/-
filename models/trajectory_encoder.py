@@ -24,7 +24,7 @@ class TrajectoryEncoder(nn.Module):
 
     def __init__(
         self,
-        input_dim: int = 9,
+        input_dim: int = 11,
         hidden_dim: int = 128,
         num_mlp_layers: int = 3,
         dropout: float = 0.1,
@@ -61,16 +61,17 @@ class TrajectoryEncoder(nn.Module):
         self.pooling = build_pooling(pooling_type, hidden_dim)
 
     def forward(
-        self, x: torch.Tensor, return_attn_weights: bool = False
+        self, x: torch.Tensor, return_attn_weights: bool = False, pool: bool = True
     ) -> torch.Tensor:
         """前向传播。
 
         参数:
             x: [B, T_obs, input_dim] 历史轨迹特征
             return_attn_weights: 是否返回注意力权重
+            pool: 是否池化；False 时返回池化前 [B, T, hidden_dim]（供车道线融合）
 
         返回:
-            encoded: [B, hidden_dim] 场景表征向量
+            encoded: [B, hidden_dim]（pool=True）或 [B, T, hidden_dim]（pool=False）
             attn_weights: [B, T_obs] 或 None（仅 return_attn_weights=True 时返回）
         """
         # 特征投影 [B, T, input_dim] → [B, T, hidden_dim]
@@ -90,6 +91,10 @@ class TrajectoryEncoder(nn.Module):
             x_t = x.transpose(1, 2)  # [B, H, T]
             x_t = self.temporal_mixer(x_t)
             x = x_t.transpose(1, 2)  # [B, T, H]
+
+        # 返回池化前特征 [B, T, hidden_dim]（供车道线融合拼接后统一池化）
+        if not pool:
+            return x, None
 
         # 时间维度池化 [B, T, hidden_dim] → [B, hidden_dim]
         pooled, attn_weights = self.pooling(x, return_weights=return_attn_weights)

@@ -4,7 +4,12 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
+
+
+# 车道线图常量（与 scripts/build_lane_graph.py 保持一致）
+LANE_NUM_NODES = 32   # 4 车道 × 8 节点
+LANE_NODE_DIM = 6     # [x, y, sinθ, cosθ, κ, v_limit]
 
 
 class ArgoverseTrajectoryDataset(Dataset):
@@ -25,11 +30,12 @@ class ArgoverseTrajectoryDataset(Dataset):
         4: "路口",
     }
 
-    def __init__(self, npz_path: str):
+    def __init__(self, npz_path: str, lane_graphs_path: Optional[str] = None):
         """从预处理好的 .npz 文件加载数据集。
 
         参数:
-            npz_path: .npz 文件路径，包含 histories, futures, categories, seq_ids
+            npz_path: .npz 文件路径，包含 histories, futures, categories, seq_ids, cities
+            lane_graphs_path: 车道线图 .npz 路径（第二阶段；None 则不加载车道线）
         """
         data = np.load(npz_path, allow_pickle=True)
 
@@ -37,6 +43,25 @@ class ArgoverseTrajectoryDataset(Dataset):
         self.futures = data["futures"]            # [N, T_pred, 2]
         self.categories = data["categories"]      # [N]
         self.seq_ids = data["seq_ids"]            # [N]
+        # 城市 ID（第二阶段域感知；旧 npz 无 cities 时填 0）
+        self.cities = (
+            data["cities"] if "cities" in data
+            else np.zeros(len(self.histories), dtype=np.int32)
+        )
+
+        # 车道线图（可选加载）
+        self.lane_nodes = None   # [N_scene, 32, 6]
+        self.lane_adj = None     # [N_scene, 32, 32]
+        self.lane_mask = None    # [N_scene, 32]
+        self._scene_to_idx: Dict[str, int] = {}
+        if lane_graphs_path is not None and Path(lane_graphs_path).exists():
+            lg = np.load(lane_graphs_path, allow_pickle=True)
+            self.lane_nodes = lg["nodes"]
+            self.lane_adj = lg["adj"]
+            self.lane_mask = lg["node_mask"]
+            self._scene_to_idx = {
+                str(sid): i for i, sid in enumerate(lg["scene_ids"])
+            }
 
         # 验证数据形状
         assert self.histories.shape[1] >= 2, f"历史帧数异常: {self.histories.shape}"
@@ -51,12 +76,29 @@ class ArgoverseTrajectoryDataset(Dataset):
         future = torch.from_numpy(self.futures[idx].copy()).float()
         category = int(self.categories[idx])
         seq_id = str(self.seq_ids[idx])
+        city_id = int(self.cities[idx])
+
+        # 车道线图（按 seq_id 解析 csv_stem 查图，查不到返回全 0 图）
+        lane_nodes = torch.zeros(LANE_NUM_NODES, LANE_NODE_DIM)
+        lane_adj = torch.zeros(LANE_NUM_NODES, LANE_NUM_NODES, dtype=torch.long)
+        lane_mask = torch.zeros(LANE_NUM_NODES, dtype=torch.long)
+        if self.lane_nodes is not None:
+            scene = seq_id.rsplit("_", 1)[0]  # {csv_stem}_{track_id} → csv_stem
+            gi = self._scene_to_idx.get(scene)
+            if gi is not None:
+                lane_nodes = torch.from_numpy(self.lane_nodes[gi].copy()).float()
+                lane_adj = torch.from_numpy(self.lane_adj[gi].copy()).long()
+                lane_mask = torch.from_numpy(self.lane_mask[gi].copy()).long()
 
         return {
-            "history": history,     # [T_obs, input_dim]
-            "future": future,        # [T_pred, 2]
-            "category": category,    # int
-            "seq_id": seq_id,        # str
+            "history": history,       # [T_obs, input_dim]
+            "future": future,          # [T_pred, 2]
+            "category": category,      # int
+            "seq_id": seq_id,          # str
+            "city_id": city_id,        # int
+            "lane_nodes": lane_nodes,  # [32, 6]
+            "lane_adj": lane_adj,      # [32, 32]
+            "lane_mask": lane_mask,    # [32]
         }
 
     @property

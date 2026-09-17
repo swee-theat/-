@@ -24,12 +24,15 @@ class MultimodalPredictor(nn.Module):
         num_modes: int = 3,
         pred_len: int = 30,
         dropout: float = 0.1,
+        branch_hidden_dim: int = 128,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_modes = num_modes
         self.pred_len = pred_len
         self.output_dim = pred_len * 2  # 每个模态输出 T_pred * 2 (x, y)
+        # 轨迹分支中间层维度（<hidden_dim 时压缩参数量；第二阶段设 96 省约 30K）
+        self.branch_hidden_dim = branch_hidden_dim
 
         # 模态选择器
         self.mode_selector = nn.Sequential(
@@ -43,10 +46,10 @@ class MultimodalPredictor(nn.Module):
         # 每个分支: hidden_dim → hidden_dim → T_pred*2
         self.traj_branches = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
+                nn.Linear(hidden_dim, branch_hidden_dim),
                 nn.ReLU(inplace=True),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_dim, self.output_dim),
+                nn.Linear(branch_hidden_dim, self.output_dim),
             )
             for _ in range(num_modes)
         ])

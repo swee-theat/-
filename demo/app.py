@@ -34,7 +34,9 @@ PRED_LEN = 30         # 预测帧数 (3秒)
 INPUT_DIM = 11        # 特征维度 (11=完整+航向+曲率)
 HIDDEN_DIM = 128
 NUM_MODES = 5         # K=5 多模态
-CHECKPOINT_PATH = "outputs/checkpoints/full_train_K5/best_model_indep.pt"
+# 项目根目录（绝对路径，避免相对路径依赖 cwd 导致找不到模型文件）
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHECKPOINT_PATH = os.path.join(BASE_DIR, "outputs", "checkpoints", "full_train_K5", "best_model_indep.pt")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -63,13 +65,16 @@ try:
         print("[OK] 从 state_dict 加载模型")
     model_loaded = True
 except FileNotFoundError:
-    print(f"[警告] 未找到模型文件: {CHECKPOINT_PATH}")
-    print("       将使用随机初始化模型（仅供界面测试）")
-    model_loaded = False
+    print(f"[错误] 未找到模型文件: {CHECKPOINT_PATH}")
+    print("       Demo 无法启动：缺少训练好的模型，请先完成训练或检查路径。")
+    print("       已终止，不会用随机模型误导展示。")
+    sys.exit(1)
 except Exception as e:
-    print(f"[警告] 模型加载失败: {e}")
-    print("       将使用随机初始化模型（仅供界面测试）")
-    model_loaded = False
+    print(f"[错误] 模型加载失败: {e}")
+    print("       通常是 checkpoint 与当前模型结构不匹配（例如共享头→独立头未迁移）。")
+    print(f"       请先运行 scripts/migrate_uncertainty_heads.py 迁移权重后重试。")
+    print("       已终止，不会用随机模型误导展示。")
+    sys.exit(1)
 
 model.eval()
 model.to(DEVICE)
@@ -397,8 +402,8 @@ if __name__ == "__main__":
     import sys
     sys.stdout.reconfigure(encoding="utf-8")
 
-    # 确保 templates 目录存在
-    os.makedirs("demo/templates", exist_ok=True)
+    # 确保 templates 目录存在（绝对路径，避免从其他目录运行时建错位置）
+    os.makedirs(os.path.join(BASE_DIR, "demo", "templates"), exist_ok=True)
 
     print("=" * 58)
     print("  轻量化多模态轨迹预测系统 -- Web Demo")

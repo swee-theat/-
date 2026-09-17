@@ -37,6 +37,7 @@ class Trainer:
         config: dict,
         logger: Optional[logging.Logger] = None,
         tb_writer=None,
+        monitor_metric: str = "val_min_ade",
     ):
         self.model = model
         self.train_loader = train_loader
@@ -111,10 +112,29 @@ class Trainer:
 
         # 追踪
         self.current_epoch = 0
-        self.best_val_ade = float("inf")
+        self.monitor_metric = monitor_metric  # 保存/早停的监控指标（Stage B 用 val_loss）
+        self.best_metric = float("inf")
         self.train_losses = []
         self.val_ades = []
         self.saved_checkpoints = []
+
+    def _extract_optional_inputs(self, batch: dict) -> dict:
+        """从 batch 提取第二阶段可选输入（车道线 + 城市），传给 model.forward。
+
+        参数:
+            batch: collate_fn 输出的 batch dict
+
+        返回:
+            kwargs: 可选关键字参数（lane_nodes/lane_adj/lane_mask/city_id）
+        """
+        kwargs = {}
+        if "lane_nodes" in batch:
+            kwargs["lane_nodes"] = batch["lane_nodes"].to(self.device)
+            kwargs["lane_adj"] = batch["lane_adj"].to(self.device)
+            kwargs["lane_mask"] = batch["lane_mask"].to(self.device)
+        if "city_id" in batch:
+            kwargs["city_id"] = batch["city_id"].to(self.device)
+        return kwargs
 
     def train_epoch(self) -> float:
         """训练一个 epoch。
@@ -134,13 +154,16 @@ class Trainer:
             history = batch["history"].to(self.device)   # [B, T_obs, input_dim]
             future = batch["future"].to(self.device)       # [B, T_pred, 2]
 
+            # 第二阶段可选输入（车道线为场景级环境信息，不做数据增强）
+            model_kwargs = self._extract_optional_inputs(batch)
+
             # 数据增强（仅训练时）
             history, future = self.augmentation(history, future)
 
             # 前向传播（使用 AMP）
             if self.use_amp and self.scaler is not None:
                 with autocast("cuda"):
-                    output = self.model(history)
+                    output = self.model(history, **model_kwargs)
                     loss_dict = self.criterion(output, future)
                     loss = loss_dict["loss"]
 
@@ -154,7 +177,7 @@ class Trainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                output = self.model(history)
+                output = self.model(history, **model_kwargs)
                 loss_dict = self.criterion(output, future)
                 loss = loss_dict["loss"]
 
@@ -221,7 +244,8 @@ class Trainer:
             history = batch["history"].to(self.device)
             future = batch["future"].to(self.device)
 
-            output = self.model(history)
+            model_kwargs = self._extract_optional_inputs(batch)
+            output = self.model(history, **model_kwargs)
             loss_dict = self.criterion(output, future)
 
             total_loss += loss_dict["loss"].item()
@@ -308,24 +332,27 @@ class Trainer:
                     f"Val minFDE: {val_metrics['val_min_fde']:.4f}"
                 )
 
-            # 保存最佳 checkpoint
-            if val_metrics["val_min_ade"] < self.best_val_ade:
-                self.best_val_ade = val_metrics["val_min_ade"]
+            # 保存最佳 checkpoint（监控指标可配置：Stage A 用 minADE，Stage B 用 val_loss）
+            current_metric = val_metrics[self.monitor_metric]
+            if current_metric < self.best_metric:
+                self.best_metric = current_metric
                 best_path = self.checkpoint_dir / "best_model.pt"
                 save_checkpoint(
                     self.model, self.optimizer, self.scheduler,
                     epoch, val_metrics, str(best_path),
                 )
                 if self.logger:
-                    self.logger.info(f"  → 保存最佳模型: minADE={self.best_val_ade:.4f}")
+                    self.logger.info(
+                        f"  → 保存最佳模型: {self.monitor_metric}={self.best_metric:.4f}"
+                    )
 
-            # 定期保存（记录 epoch 和 minADE 用于 top-k 筛选）
+            # 定期保存（记录监控指标用于 top-k 筛选）
             ckpt_path = self.checkpoint_dir / f"checkpoint_epoch_{epoch + 1}.pt"
             save_checkpoint(
                 self.model, self.optimizer, self.scheduler,
                 epoch, val_metrics, str(ckpt_path),
             )
-            self.saved_checkpoints.append((val_metrics["val_min_ade"], str(ckpt_path)))
+            self.saved_checkpoints.append((val_metrics[self.monitor_metric], str(ckpt_path)))
 
             # 保留 minADE 最小的 save_top_k 个 checkpoint
             if len(self.saved_checkpoints) > self.save_top_k:
@@ -335,18 +362,20 @@ class Trainer:
                 if os.path.exists(old_ckpt) and "best_model" not in old_ckpt:
                     os.remove(old_ckpt)
 
-            # 早停检查
-            if self.early_stopping(val_metrics["val_min_ade"], epoch):
+            # 早停检查（监控指标与保存一致）
+            if self.early_stopping(val_metrics[self.monitor_metric], epoch):
                 if self.logger:
                     self.logger.info(
                         f"早停触发！最佳 epoch: {self.early_stopping.best_epoch + 1}, "
-                        f"最佳 minADE: {self.early_stopping.best_score:.4f}"
+                        f"最佳 {self.monitor_metric}: {self.early_stopping.best_score:.4f}"
                     )
                 break
 
         # 训练结束总结
         result = {
-            "best_val_min_ade": self.best_val_ade,
+            "best_val_min_ade": self.best_metric,  # 向后兼容：默认监控 val_min_ade 时即 minADE
+            "best_metric": self.best_metric,
+            "monitor_metric": self.monitor_metric,
             "best_epoch": self.early_stopping.best_epoch,
             "train_losses": self.train_losses,
             "val_ades": self.val_ades,
@@ -354,6 +383,8 @@ class Trainer:
         }
 
         if self.logger:
-            self.logger.info(f"训练完成！最佳 Val minADE: {self.best_val_ade:.4f}")
+            self.logger.info(
+                f"训练完成！最佳 {self.monitor_metric}: {self.best_metric:.4f}"
+            )
 
         return result

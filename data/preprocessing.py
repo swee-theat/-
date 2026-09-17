@@ -32,6 +32,23 @@ COLUMN_MAP = {
 }
 
 
+# 城市标签 → 整数 ID（第二阶段"简化城市特征/域感知"用；未知城市归 UNK=0）
+CITY_TO_ID = {
+    "UNK": 0,
+    "ATL": 1,
+    "MIA": 2,
+    "PIT": 3,
+    "PAO": 4,
+    "AUS": 5,
+    "WDC": 6,
+}
+
+
+def city_to_id(city: str) -> int:
+    """城市字符串 → 整数 ID（0-6，未知归 0）。"""
+    return CITY_TO_ID.get(str(city).upper(), 0)
+
+
 def _detect_columns(df: pd.DataFrame) -> Dict[str, str]:
     """自动检测 CSV 列名映射。"""
     cols = {c.upper(): c for c in df.columns}
@@ -60,6 +77,9 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     normalized["object_type"] = df[detected["object_type"]]
     normalized["x"] = df[detected["x"]].astype(np.float32)
     normalized["y"] = df[detected["y"]].astype(np.float32)
+
+    # 可选保留城市列（第二阶段"简化城市特征/域感知"用），缺失填 "UNK"
+    normalized["city"] = df[detected["city"]] if "city" in detected else "UNK"
 
     return normalized
 
@@ -303,6 +323,7 @@ def process_csv_file(
     csv_path: str,
     obs_len: int = 20,
     pred_len: int = 30,
+    split: str = "",
 ) -> List[Dict]:
     """处理单个 Argoverse CSV 文件，提取所有有效智能体轨迹。
 
@@ -310,6 +331,9 @@ def process_csv_file(
         csv_path: CSV 文件路径
         obs_len: 观测帧数
         pred_len: 预测帧数
+        split: 数据集划分标签（如 "train"/"val"）。Argoverse 的 train 与 val 目录
+            存在同名场景文件（如都含 1.csv），seq_id 必须带 split 前缀才能全局唯一，
+            否则车道线图（按 scene_id 关联）会错位。空字符串时保持旧格式向后兼容。
 
     返回:
         样本列表，每个样本为 {"history", "future", "category", "seq_id"} 字典
@@ -326,11 +350,18 @@ def process_csv_file(
         warnings.warn(f"标准化 {csv_path} 失败: {e}")
         return []
 
+    # 城市标签（场景级，取首行；缺失则 UNK）
+    city_val = str(df["city"].iloc[0]) if "city" in df.columns else "UNK"
+
     samples = []
     for track_id in df["track_id"].unique():
         sample = extract_agent_track(df, track_id, obs_len, pred_len)
         if sample is not None:
-            sample["seq_id"] = f"{Path(csv_path).stem}_{track_id}"
+            sample["seq_id"] = (
+                f"{split}_{Path(csv_path).stem}_{track_id}"
+                if split else f"{Path(csv_path).stem}_{track_id}"
+            )
+            sample["city"] = city_val
             samples.append(sample)
 
     return samples
@@ -366,6 +397,7 @@ def process_dataset(
     all_futures = []
     all_categories = []
     all_seq_ids = []
+    all_cities = []
     total_samples = 0
 
     for i, csv_path in enumerate(csv_files):
@@ -375,6 +407,7 @@ def process_dataset(
             all_futures.append(s["future"])
             all_categories.append(s["category"])
             all_seq_ids.append(s["seq_id"])
+            all_cities.append(city_to_id(s["city"]))
             total_samples += 1
 
         if (i + 1) % 1000 == 0:
@@ -390,6 +423,7 @@ def process_dataset(
         futures=np.array(all_futures, dtype=np.float32),
         categories=np.array(all_categories, dtype=np.int32),
         seq_ids=np.array(all_seq_ids),
+        cities=np.array(all_cities, dtype=np.int32),
     )
 
     print(f"  {split} 集处理完成: {total_samples} 样本 → {output_path}")

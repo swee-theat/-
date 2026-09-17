@@ -11,6 +11,7 @@ def collate_fn(batch: list) -> dict:
 
     参数:
         batch: list of dict, 每个 dict 包含 history, future, category, seq_id
+               （第二阶段另含 lane_nodes/lane_adj/lane_mask/city_id）
 
     返回:
         合并后的 batch dict（tensor 在 dim=0 拼接）
@@ -19,6 +20,23 @@ def collate_fn(batch: list) -> dict:
     futures = torch.stack([item["future"] for item in batch])
     categories = torch.tensor([item["category"] for item in batch], dtype=torch.long)
     seq_ids = [item["seq_id"] for item in batch]
+
+    # 第二阶段新增字段（车道线 + 城市；兼容不含这些字段的旧 dataset）
+    if all("lane_nodes" in item for item in batch):
+        lane_nodes = torch.stack([item["lane_nodes"] for item in batch])
+        lane_adj = torch.stack([item["lane_adj"] for item in batch])
+        lane_mask = torch.stack([item["lane_mask"] for item in batch])
+        city_ids = torch.tensor([item["city_id"] for item in batch], dtype=torch.long)
+        return {
+            "history": histories,       # [B, T_obs, input_dim]
+            "future": futures,          # [B, T_pred, 2]
+            "category": categories,     # [B]
+            "seq_id": seq_ids,          # list[str]
+            "lane_nodes": lane_nodes,   # [B, 32, 6]
+            "lane_adj": lane_adj,       # [B, 32, 32]
+            "lane_mask": lane_mask,     # [B, 32]
+            "city_id": city_ids,        # [B]
+        }
 
     return {
         "history": histories,       # [B, T_obs, input_dim]
